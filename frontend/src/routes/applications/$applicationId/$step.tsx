@@ -8,54 +8,171 @@ import {
   TextField,
   Typography,
 } from '@kyc/ui'
-import { useState } from 'react'
-import { useNavigate } from 'react-router'
+import { useEffect, useState, type ChangeEvent } from 'react'
+import { redirect, useNavigate } from 'react-router'
 
+import { accountAccessHref } from '../../-return-target'
+import {
+  getApplicantApplicationForm,
+  saveApplicantApplicationForm,
+  type AnswerValue,
+  type ApplicantStep,
+  type ApplicationForm,
+  type FormAnswers,
+} from '../../../lib/applicant-application-api'
+import { useApplicationFormStore } from '../../../stores/application-form-store'
 import styles from '../../application-step.module.css'
 
 import type { Route } from './+types/$step'
 
-const fields = {
+const stepFields: Record<
+  Exclude<ApplicantStep, never>,
+  Array<{ key: string; label: string }>
+> = {
   'personal-details': [
-    'Name',
-    'Date of birth',
-    'Country',
-    'Nationality',
-    'Email',
-    'Phone',
+    { key: 'name', label: 'Name' },
+    { key: 'dateOfBirth', label: 'Date of birth' },
+    { key: 'country', label: 'Country' },
+    { key: 'nationality', label: 'Nationality' },
+    { key: 'email', label: 'Email' },
+    { key: 'phone', label: 'Phone' },
   ],
   'identity-and-address': [
-    'Document type',
-    'Document number',
-    'Document country',
-    'Expiry',
-    'Street',
-    'City',
-    'Postal code',
-    'Residential country',
+    { key: 'documentType', label: 'Document type' },
+    { key: 'documentNumber', label: 'Document number' },
+    { key: 'documentCountry', label: 'Document country' },
+    { key: 'expiry', label: 'Expiry' },
+    { key: 'street', label: 'Street' },
+    { key: 'city', label: 'City' },
+    { key: 'postal', label: 'Postal code' },
+    { key: 'residentialCountry', label: 'Residential country' },
   ],
-} as const
+}
 
-export default function CurrentApplicationStepPage({
-  params,
-}: Route.ComponentProps) {
+function submitLabel(step: ApplicantStep, isSaving: boolean): string {
+  if (isSaving) {
+    return 'Saving…'
+  }
+  return step === 'personal-details' ? 'Continue' : 'Save and review'
+}
+
+export async function clientLoader({ params }: Route.ClientLoaderArgs) {
+  if (
+    params.step !== 'personal-details' &&
+    params.step !== 'identity-and-address'
+  ) {
+    return { form: null, error: undefined }
+  }
+  const result = await getApplicantApplicationForm(params.applicationId)
+  if (result.kind === 'unauthorized') {
+    throw redirect(
+      accountAccessHref(
+        '/sign-in',
+        `/applications/${params.applicationId}/${params.step}`,
+      ),
+    )
+  }
+  if (result.kind === 'not-found') {
+    throw redirect('/applications/current')
+  }
+  if (result.kind === 'error') {
+    return { form: null, error: result.message }
+  }
+  return { form: result.form, error: undefined }
+}
+
+export default function CurrentApplicationStepPage(
+  props: Route.ComponentProps,
+) {
+  // Remount on step/application change so form state reinitializes from the fresh loader data.
+  return (
+    <StepForm
+      key={`${props.params.applicationId}-${props.params.step}`}
+      {...props}
+    />
+  )
+}
+
+function StepForm({ params, loaderData }: Route.ComponentProps) {
   const navigate = useNavigate()
   const step =
     params.step === 'identity-and-address'
       ? 'identity-and-address'
       : 'personal-details'
+  const setApplication = useApplicationFormStore(
+    (state) => state.setApplication,
+  )
+  const formVersion = useApplicationFormStore((state) => state.form?.version)
+
+  const [answers, setAnswers] = useState<FormAnswers>(
+    loaderData.form?.answers ?? {},
+  )
   const [missing, setMissing] = useState(false)
   const [saved, setSaved] = useState(false)
-  const advance = () => {
+  const [saveError, setSaveError] = useState<string>()
+  const [isSaving, setIsSaving] = useState(false)
+
+  useEffect(() => {
+    if (loaderData.form) {
+      setApplication(params.applicationId, loaderData.form)
+    }
+  }, [loaderData.form, params.applicationId, setApplication])
+
+  function updateAnswer(key: string, value: AnswerValue) {
+    setAnswers((current) => ({ ...current, [key]: value }))
+    setSaved(false)
+    setSaveError(undefined)
+  }
+
+  async function save(nextPath: string) {
+
+    // 502
+   //  void navigate(`${nextPath}`)
+    //
+
     const form = document.querySelector('form')
-    if (form && !form.reportValidity()) return
+    if (form && !form.reportValidity()) {
+      setMissing(true)
+      return
+    }
+    if (isSaving) {
+      return
+    }
     setMissing(false)
-    setSaved(true)
-    if (step === 'personal-details')
-      void navigate(
-        `/applications/${params.applicationId}/identity-and-address`,
+    setSaveError(undefined)
+    setIsSaving(true)
+    try {
+      const result = await saveApplicantApplicationForm(
+        params.applicationId,
+        step,
+        answers,
+        formVersion,
       )
-    else void navigate(`/applications/${params.applicationId}/review`)
+      if (result.kind === 'saved') {
+        setApplication(params.applicationId, result.form as ApplicationForm)
+        setSaved(true)
+        void navigate(nextPath)
+      } else if (result.kind === 'unauthorized') {
+        void navigate(
+          accountAccessHref(
+            '/sign-in',
+            `/applications/${params.applicationId}/${step}`,
+          ),
+        )
+      } else if (result.kind === 'conflict') {
+        setSaveError(result.message)
+      } else if (result.kind === 'invalid') {
+        setSaveError(result.message)
+      } else if (result.kind === 'not-found') {
+        setSaveError('This application is no longer available.')
+      } else if (result.kind === 'forbidden') {
+        setSaveError('You do not have permission to update this application.')
+      } else {
+        setSaveError(result.message)
+      }
+    } finally {
+      setIsSaving(false)
+    }
   }
 
   if (params.step === 'review') {
@@ -118,17 +235,45 @@ export default function CurrentApplicationStepPage({
             className={styles.stepForm}
             onSubmit={(event) => {
               event.preventDefault()
-              advance()
+              const nextPath =
+                step === 'personal-details'
+                  ? `/applications/${params.applicationId}/identity-and-address`
+                  : `/applications/${params.applicationId}/review`
+              void save(nextPath)
             }}
             spacing={2}
           >
-            {fields[step].map((label) => (
-              <TextField key={label} label={`${label} (required)`} required />
+            {stepFields[step].map(({ key, label }) => (
+              <TextField
+                key={key}
+              //  label={`${label} (required)`}
+                label={
+                  <>
+                    {label} <span style={{ color: "red" }}>*</span>
+                  </>
+                }
+                onChange={(event: ChangeEvent<HTMLInputElement>) => {
+                  updateAnswer(key, event.target.value)
+                }}
+                required
+                value={
+                  typeof answers[key] === 'string'
+                    ? (answers[key] as string)
+                    : ''
+                }
+              />
             ))}
             {step === 'personal-details' ? (
               <label>
-                <input required type="checkbox" /> I confirm these details are
-                accurate and belong to me.
+                <input
+                  checked={Boolean(answers.consentConfirmed)}
+                  onChange={(event: ChangeEvent<HTMLInputElement>) => {
+                    updateAnswer('consentConfirmed', event.target.checked)
+                  }}
+                  required
+                  type="checkbox"
+                />{' '}
+                I confirm these details are accurate and belong to me.
               </label>
             ) : (
               <>
@@ -148,9 +293,14 @@ export default function CurrentApplicationStepPage({
                 Complete all required fields before continuing.
               </Alert>
             ) : null}
+            {saveError ? (
+              <Alert aria-live="assertive" role="alert" severity="error">
+                {saveError}
+              </Alert>
+            ) : null}
             {saved ? (
-              <Alert role="status" severity="success">
-                Your progress was saved in this prototype.
+              <Alert aria-live="polite" role="status" severity="success">
+                Your progress was saved.
               </Alert>
             ) : null}
             <Stack
@@ -172,8 +322,8 @@ export default function CurrentApplicationStepPage({
               >
                 Back
               </Button>
-              <Button type="submit">
-                {step === 'personal-details' ? 'Continue' : 'Save and review'}
+              <Button type="submit" isDisabled={isSaving} aria-busy={isSaving}>
+                {submitLabel(step, isSaving)}
               </Button>
             </Stack>
           </Stack>
