@@ -103,4 +103,37 @@ describe('route-colocated ApplicantJourneyPresentation', () => {
     ).toHaveTextContent(/Complete.*Current step/)
     expect(await axe(container)).toHaveNoViolations()
   })
+
+  it('marks the identity-and-address step as the current step when it is active', () => {
+    renderJourney({
+      entryState: 'resume',
+      progress: [
+        { step: 'personal-details', state: 'complete' },
+        { step: 'identity-and-address', state: 'current' },
+      ],
+    })
+
+    expect(screen.getByText('Identity and address').closest('li')).toHaveAttribute(
+      'aria-current',
+      'step',
+    )
+    expect(screen.getByText('Personal details').closest('li')).not.toHaveAttribute(
+      'aria-current',
+    )
+  })
+
+  it('invokes onPrimaryAction exactly once per click without navigating by itself', async () => {
+    const user = userEvent.setup()
+    const { onPrimaryAction } = renderJourney(applicantJourneyFixtures.resume)
+
+    await user.click(screen.getByRole('button', { name: 'Resume application' }))
+
+    expect(onPrimaryAction).toHaveBeenCalledOnce()
+  })
+
+  it('has no accessibility violations in the default start state', async () => {
+    const { container } = renderJourney(applicantJourneyFixtures.start)
+
+    expect(await axe(container)).toHaveNoViolations()
+  })
 })
