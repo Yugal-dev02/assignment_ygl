@@ -132,6 +132,10 @@
 .description[data-slot='errorMessage'] {
   color: #b42318;
 }
+.error {
+  color: #f53606;
+  font-size: 0.875rem;
+}
 .table {
   border-collapse: collapse;
   width: 100%;

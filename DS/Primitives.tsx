@@ -235,7 +235,7 @@ export function TextField({
       {Boolean(helperText) && (
         <Text
           slot={error ? 'errorMessage' : 'description'}
-          className={styles.description}
+          className={error ? styles.error : styles.description}
         >
           {helperText}
         </Text>

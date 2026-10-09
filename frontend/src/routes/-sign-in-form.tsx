@@ -8,7 +8,11 @@ import {
   TextField,
   Typography,
 } from '@kyc/ui'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent } from 'react'
+import { z } from 'zod'
+
+import { createApplicantSession } from '../lib/applicant-session-api'
+import { useApplicationFormStore } from '../stores/application-form-store'
 
 import { accountAccessHref, isSafeJourneyPath } from './-return-target'
 import styles from './account-access.module.css'
@@ -19,6 +23,18 @@ export interface SignInFormProps {
   onSuccess: (href: string) => void
 }
 
+const signInSchema = z.object({
+  email: z.string().trim().min(1, 'Enter your email address.').email('Enter a valid email address.'), // 
+  password: z.string().min(1, 'Enter your password.')
+    .regex(/[A-Z]/, "Password must contain at least 1 uppercase letter")
+    .regex(
+      /[!@#$%^&*(),.?":{}|<>_\-\\[\]`~;'+=/]/,
+      "Password must contain at least 1 special character"
+    ),
+})
+
+type FieldErrors = Partial<Record<'email' | 'password', string>>
+
 export function SignInForm({
   onNavigate,
   returnTo,
@@ -26,37 +42,61 @@ export function SignInForm({
 }: SignInFormProps) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [error, setError] = useState<string>()
-  const [emailError, setEmailError] = useState<string>()
-  const [passwordError, setPasswordError] = useState<string>()
+  const [formError, setFormError] = useState<string>()
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({})
+  const [isSubmitting, setIsSubmitting] = useState(false)
   const emailInput = useRef<HTMLInputElement>(null)
   const passwordInput = useRef<HTMLInputElement>(null)
+  const clearApplicationForm = useApplicationFormStore((state) => state.clear)
 
   useEffect(() => {
-    if (emailError) {
+    if (fieldErrors.email) {
       emailInput.current?.focus()
-    } else if (passwordError) {
+    } else if (fieldErrors.password) {
       passwordInput.current?.focus()
     }
-  }, [emailError, passwordError])
+  }, [fieldErrors])
 
   async function submit(): Promise<void> {
-    setError(undefined)
-    setEmailError(undefined)
-    setPasswordError(undefined)
+    if (isSubmitting) {
+      return
+    }
+    setFormError(undefined)
+    setFieldErrors({})
 
-    try {
-      const destination = returnTo ?? '/applications/current'
-      if (!isSafeJourneyPath(destination)) {
-        throw new Error('The destination is invalid.')
+    const parsed = signInSchema.safeParse({ email, password })
+    if (!parsed.success) {
+      const nextFieldErrors: FieldErrors = {}
+      for (const issue of parsed.error.issues) {
+        const key = issue.path[0]
+        if ((key === 'email' || key === 'password') && !nextFieldErrors[key]) {
+          nextFieldErrors[key] = issue.message
+        }
       }
-      onSuccess(destination)
-    } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : 'Account access could not be completed.',
+      setFieldErrors(nextFieldErrors)
+      return
+    }
+
+    setIsSubmitting(true)
+    try {
+      const result = await createApplicantSession(
+        parsed.data.email,
+        parsed.data.password,
       )
+      if (result.kind === 'success') {
+        // Drop any cached draft from a previous Applicant before entering the journey.
+        clearApplicationForm()
+        const destination =
+          returnTo && isSafeJourneyPath(returnTo) ? returnTo : result.href
+        onSuccess(destination)
+      } else if (result.kind === 'invalid') {
+        setFieldErrors(result.fieldErrors)
+      } else {
+        setPassword('')
+        setFormError(result.message)
+      }
+    } finally {
+      setIsSubmitting(false)
     }
   }
 
@@ -81,23 +121,23 @@ export function SignInForm({
                 Sign in to continue your KYC application.
               </Typography>
             </Stack>
-            {(error ?? emailError ?? passwordError) ? (
+            {formError ? (
               <Alert aria-live="assertive" role="alert" severity="error">
-                {error ?? emailError ?? passwordError}
+                {formError}
               </Alert>
             ) : null}
             <TextField
               autoComplete="email"
-              error={Boolean(emailError)}
+              error={Boolean(fieldErrors.email)}
               fullWidth
-              helperText={emailError}
+              helperText={fieldErrors.email}
               id="applicant-email"
               inputRef={emailInput}
               label="Email address"
               name="email"
-              onChange={(event) => {
+              onChange={(event: ChangeEvent<HTMLInputElement>) => {
                 setEmail(event.target.value)
-                setEmailError(undefined)
+                setFieldErrors((current) => ({ ...current, email: undefined }))
               }}
               required
               type="email"
@@ -105,28 +145,33 @@ export function SignInForm({
             />
             <TextField
               autoComplete="current-password"
-              error={Boolean(passwordError)}
+              error={Boolean(fieldErrors.password)}
               fullWidth
-              helperText={passwordError}
+              helperText={fieldErrors.password}
               id="applicant-password"
               inputRef={passwordInput}
               label="Password"
               name="password"
-              onChange={(event) => {
+              onChange={(event: ChangeEvent<HTMLInputElement>) => {
                 setPassword(event.target.value)
-                setPasswordError(undefined)
+                setFieldErrors((current) => ({
+                  ...current,
+                  password: undefined,
+                }))
               }}
               required
               type="password"
               value={password}
             />
             <Button
+              aria-busy={isSubmitting}
               className={styles.submit}
               fullWidth
+              isDisabled={isSubmitting}
               size="large"
               type="submit"
             >
-              Sign in
+              {isSubmitting ? 'Signing in…' : 'Sign in'}
             </Button>
             <Typography
               className={styles.footer}
@@ -136,7 +181,7 @@ export function SignInForm({
               <span>New to KYC? </span>
               <Link
                 href={accountAccessHref('/create-account', returnTo)}
-                onClick={(event) => {
+                onClick={(event: any) => {
                   if (onNavigate) {
                     event.preventDefault()
                     onNavigate(accountAccessHref('/create-account', returnTo))
