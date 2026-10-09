@@ -8,7 +8,7 @@ export default defineConfig({
   reporter: 'list',
   retries: 0,
   use: {
-    baseURL: process.env.E2E_BASE_URL ?? 'http://127.0.0.1:13000',
+    baseURL: process.env.E2E_BASE_URL ??  'http://localhost:3000', //   'http://127.0.0.1:13000',
     trace: 'retain-on-failure',
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
